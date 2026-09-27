@@ -48,14 +48,16 @@ docker compose down
 | AccessPoint | `src/types/point.ts` | 点位编号、名称、设施类型、经纬度、行政区、所在道路或建筑、建成年代、养护单位 |
 | Inspection | `src/types/inspection.ts` | 核验日期、核验人、坡度 %、净宽 cm、扶手、盲道连续性、占用情况、结论、问题描述 |
 | RouteSegment | `src/types/route.ts` | 路线名称、起点/终点点位、长度、障碍数、台阶数、路缘高差、是否可轮椅通行 |
-| RectifyPlan | `src/types/rectify.ts` | 点位 id、整改要求、责任单位、整改期限、复检日期、状态 |
+| RectifyPlan | `src/types/rectify.ts` | 点位 id、整改要求、责任单位、整改期限、最近复检日期、状态、复检历史 RecheckRecord（日期/坡度/净宽/扶手/盲道连续/占用/自动判定结论/说明） |
+| RecheckRecord | `src/types/rectify.ts` | 每次复检一条：现场实测值、自动判定结论、对应核验记录 id、复检人、说明 |
 
 ## 数据存储
 
 - **IndexedDB（Dexie，库名 `gbaccessmap-db`）**：业务数据。含版本号与升级迁移：
   - `v1` 建 `points` / `inspections` 表；
   - `v2` 增加 `routes` 表与 `pointId` 相关索引；
-  - `v3` 增加 `rectifies` 表，并为历史「不合格」核验补建整改条目。
+  - `v3` 增加 `rectifies` 表，并为历史「不合格」核验补建整改条目；
+  - `v4` 整改条目增加 `rechecks` 复检历史，核验记录增加 `source`（核验/复检）与 `rectifyId` 来源标记；复检登记在同一事务写入复检记录与核验历史。
 - **localStorage**：点位登记表单草稿（`gbaccessmap-draft:point-new`）与 UI 偏好（`gbaccessmap-ui`）。
 - 首次打开时自动写入一批示例数据，便于直接体验。
 - 容器无状态：不使用数据库服务、不挂载命名卷，清空浏览器存储即可重置数据。

@@ -62,7 +62,10 @@ export function useInspectionFilter(): InspectionFilterResult {
     const map = new Map<string, Inspection>();
     for (const i of inspections) {
       const cur = map.get(i.pointId);
-      if (!cur || cur.date < i.date) map.set(i.pointId, i);
+      // 日期新的为准；同日复检以登记时间新的为准，保证总览跟随最新复检结果
+      if (!cur || cur.date < i.date || (cur.date === i.date && cur.createdAt < i.createdAt)) {
+        map.set(i.pointId, i);
+      }
     }
     return map;
   }, [inspections]);

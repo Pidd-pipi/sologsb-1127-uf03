@@ -23,6 +23,7 @@ import { Link, useParams } from 'react-router-dom';
 import MapPanel from '../components/common/MapPanel';
 import MeasureInput from '../components/common/MeasureInput';
 import StatusBadge from '../components/common/StatusBadge';
+import RecheckHistory from '../components/common/RecheckHistory';
 import FacilityIcon from '../components/common/FacilityIcon';
 import EmptyState from '../components/common/EmptyState';
 import { usePointStore } from '../stores/pointStore';
@@ -156,7 +157,18 @@ export default function PointDetail() {
   };
 
   const inspectionColumns: ColumnsType<Inspection> = [
-    { title: '核验日期', dataIndex: 'date', width: 120, sorter: (a, b) => (a.date < b.date ? -1 : 1) },
+    {
+      title: '核验日期',
+      dataIndex: 'date',
+      width: 120,
+      sorter: (a, b) => (a.date < b.date ? -1 : 1),
+      render: (v: string, row) => (
+        <Space size={4}>
+          {v}
+          {row.source === '复检' && <Tag color="processing">复检</Tag>}
+        </Space>
+      ),
+    },
     { title: '核验人', dataIndex: 'inspector', width: 130 },
     { title: '坡度', dataIndex: 'slope', width: 80, render: (v: number) => `${v}%` },
     { title: '净宽', dataIndex: 'clearWidth', width: 90, render: (v: number) => `${v} cm` },
@@ -204,6 +216,12 @@ export default function PointDetail() {
       dataIndex: 'recheckDate',
       width: 120,
       render: (v: string) => v || <Typography.Text type="secondary">未复检</Typography.Text>,
+    },
+    {
+      title: '复检次数',
+      width: 90,
+      render: (_, row) =>
+        row.rechecks?.length ? `${row.rechecks.length} 次` : <Typography.Text type="secondary">未复检</Typography.Text>,
     },
     {
       title: '状态',
@@ -408,7 +426,24 @@ export default function PointDetail() {
       <Card title="整改跟踪" size="small" style={{ marginTop: 16 }}>
         <Divider style={{ margin: '0 0 12px' }} />
         {plans.length ? (
-          <Table<RectifyPlan> rowKey="id" size="small" pagination={false} dataSource={plans} columns={rectifyColumns} />
+          <Table<RectifyPlan>
+            rowKey="id"
+            size="small"
+            pagination={false}
+            dataSource={plans}
+            columns={rectifyColumns}
+            expandable={{
+              rowExpandable: (row) => (row.rechecks?.length ?? 0) > 0,
+              expandedRowRender: (row) => (
+                <div>
+                  <Typography.Text strong>复检历史（{row.rechecks.length} 次）</Typography.Text>
+                  <div style={{ marginTop: 8 }}>
+                    <RecheckHistory records={row.rechecks} pagination />
+                  </div>
+                </div>
+              ),
+            }}
+          />
         ) : (
           <EmptyState
             title="暂无整改条目"

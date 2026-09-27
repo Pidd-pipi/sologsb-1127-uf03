@@ -13,6 +13,7 @@ export const DB_NAME = 'gbaccessmap-db';
  * v1 建 points / inspections
  * v2 加 routes 表与 pointId 索引
  * v3 加 rectifies 表，并为历史不合格核验补建整改条目
+ * v4 整改条目增加 rechecks 复检历史；核验记录增加 source / rectifyId 来源标记
  */
 class AccessMapDb extends Dexie {
   points!: Table<AccessPoint, string>;
@@ -70,6 +71,43 @@ class AccessMapDb extends Dexie {
             status: '待整改',
             createdAt: new Date().toISOString(),
           });
+        }
+      });
+    this.version(4)
+      .stores({
+        points: 'id, code, facilityType, district, name',
+        inspections: 'id, pointId, date, conclusion',
+        routes: 'id, routeName, fromPointId, toPointId, order',
+        rectifies: 'id, pointId, status, deadline',
+      })
+      .upgrade(async (tx) => {
+        // v4：为历史整改条目补空复检历史；并为升级前已登记的「已整改」复检
+        // 补一条说明型记录，确保历史可追溯、总览仍按最新核验结论统计
+        const rectifyTable = tx.table<RectifyPlan, string>('rectifies');
+        const rows = await rectifyTable.toArray();
+        for (const row of rows) {
+          if (Array.isArray(row.rechecks)) continue;
+          const legacy: RectifyPlan['rechecks'] = [];
+          if (row.status === '已整改' && row.recheckDate) {
+            legacy.push({
+              id: `rchk-mig-${row.id}`,
+              rectifyId: row.id,
+              inspectionId: '',
+              date: row.recheckDate,
+              inspector: '',
+              slope: 0,
+              clearWidth: 0,
+              hasHandrail: false,
+              tactileContinuous: false,
+              occupied: '无',
+              conclusion: '合格',
+              reasons: ['升级前登记的复检，未留存现场实测值'],
+              note: '',
+              result: '已整改',
+              createdAt: row.createdAt ?? new Date().toISOString(),
+            });
+          }
+          await rectifyTable.update(row.id, { rechecks: legacy });
         }
       });
   }
@@ -323,9 +361,37 @@ function buildSeed() {
       occupied: s.occupied,
       conclusion: judged.conclusion,
       problem: s.problem,
+      source: '核验',
       createdAt: now,
     };
   });
+
+  // rct-seed-4 已整改完成：补一条达标复检，并并入该点位核验历史
+  const recheckDate = addDays(today, -12);
+  const recheckJudged = judgeInspection({
+    slope: 1.6,
+    clearWidth: 150,
+    hasHandrail: true,
+    tactileContinuous: true,
+    occupied: '无',
+  });
+  inspections.push({
+    id: 'ins-seed-recheck-4',
+    pointId: 'pt-1008',
+    date: recheckDate,
+    inspector: '督导员 陈默',
+    slope: 1.6,
+    clearWidth: 150,
+    hasHandrail: true,
+    tactileContinuous: true,
+    occupied: '无',
+    conclusion: recheckJudged.conclusion,
+    problem: '复检：盲文标识已更换，各项指标达标',
+    source: '复检',
+    rectifyId: 'rct-seed-4',
+    createdAt: now,
+  });
+
   const routes: RouteSegment[] = [];
   SEED_ROUTES.forEach((r, ri) => {
     for (let i = 1; i < r.pointIds.length; i += 1) {
@@ -353,6 +419,7 @@ function buildSeed() {
       deadline: addDays(today, -21),
       recheckDate: '',
       status: '待整改',
+      rechecks: [],
       createdAt: now,
     },
     {
@@ -363,6 +430,7 @@ function buildSeed() {
       deadline: addDays(today, -6),
       recheckDate: '',
       status: '待整改',
+      rechecks: [],
       createdAt: now,
     },
     {
@@ -373,6 +441,7 @@ function buildSeed() {
       deadline: addDays(today, 18),
       recheckDate: '',
       status: '待整改',
+      rechecks: [],
       createdAt: now,
     },
     {
@@ -381,8 +450,27 @@ function buildSeed() {
       requirement: '更换电梯轿厢呼叫按钮盲文标识',
       unit: '轨道交通运营部',
       deadline: addDays(today, -40),
-      recheckDate: addDays(today, -12),
+      recheckDate,
       status: '已整改',
+      rechecks: [
+        {
+          id: 'rchk-seed-4',
+          rectifyId: 'rct-seed-4',
+          inspectionId: 'ins-seed-recheck-4',
+          date: recheckDate,
+          inspector: '督导员 陈默',
+          slope: 1.6,
+          clearWidth: 150,
+          hasHandrail: true,
+          tactileContinuous: true,
+          occupied: '无',
+          conclusion: recheckJudged.conclusion,
+          reasons: recheckJudged.reasons,
+          note: '盲文标识已更换，现场实测达标',
+          result: '已整改',
+          createdAt: now,
+        },
+      ],
       createdAt: now,
     },
   ];
