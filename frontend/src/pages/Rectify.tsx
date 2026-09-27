@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import {
+  Alert,
   App,
   Button,
   Card,
@@ -10,6 +11,7 @@ import {
   Row,
   Select,
   Space,
+  Switch,
   Table,
   Tag,
   Typography,
@@ -20,26 +22,50 @@ import { Link } from 'react-router-dom';
 import dayjs from 'dayjs';
 import StatusBadge from '../components/common/StatusBadge';
 import EmptyState from '../components/common/EmptyState';
+import MeasureInput from '../components/common/MeasureInput';
+import RecheckHistory from '../components/common/RecheckHistory';
 import { useInspectionFilter } from '../hooks/useInspectionFilter';
 import { usePointStore } from '../stores/pointStore';
 import { DISTRICTS, FACILITY_TYPES } from '../types/point';
-import { RECTIFY_STATUSES, type RectifyPlan, type RectifyStatus } from '../types/rectify';
+import { OCCUPIED_LEVELS } from '../types/inspection';
+import {
+  RECTIFY_STATUSES,
+  type RectifyPlan,
+  type RectifyStatus,
+  type RecheckDraft,
+} from '../types/rectify';
+import { judgeInspection } from '../utils/routeCheck';
 import { isOverdue, todayStr } from '../utils/format';
 
-interface RecheckDraft {
-  status: RectifyStatus;
-  recheckDate: string;
-  note: string;
+function emptyDraft(latest?: {
+  inspector: string;
+  slope: number;
+  clearWidth: number;
+  hasHandrail: boolean;
+  tactileContinuous: boolean;
+  occupied: RecheckDraft['occupied'];
+}): RecheckDraft {
+  return {
+    date: todayStr(),
+    inspector: latest?.inspector ?? '督导员 李维',
+    slope: latest?.slope ?? 0,
+    clearWidth: latest?.clearWidth ?? 0,
+    hasHandrail: latest?.hasHandrail ?? true,
+    tactileContinuous: latest?.tactileContinuous ?? true,
+    occupied: latest?.occupied ?? '无',
+    note: '',
+  };
 }
 
 export default function Rectify() {
   const { message } = App.useApp();
   const { filter, setFilter, resetFilter, pendingRectifies, pointMap } = useInspectionFilter();
   const rectifies = usePointStore((s) => s.rectifies);
-  const updateRectify = usePointStore((s) => s.updateRectify);
+  const inspections = usePointStore((s) => s.inspections);
+  const registerRecheck = usePointStore((s) => s.registerRecheck);
   const [statusFilter, setStatusFilter] = useState<RectifyStatus | ''>('');
   const [editing, setEditing] = useState<RectifyPlan | null>(null);
-  const [draft, setDraft] = useState<RecheckDraft>({ status: '已整改', recheckDate: todayStr(), note: '' });
+  const [draft, setDraft] = useState<RecheckDraft>(() => emptyDraft());
   const [saving, setSaving] = useState(false);
 
   const scoped = useMemo(
@@ -71,24 +97,53 @@ export default function Rectify() {
     ].filter((g) => g.items.length > 0);
   }, [visible]);
 
+  // 实时按现场测值自动判定：合格=达标，限期整改/不合格=仍不达标（复发）
+  const judgement = useMemo(
+    () =>
+      judgeInspection({
+        slope: draft.slope,
+        clearWidth: draft.clearWidth,
+        hasHandrail: draft.hasHandrail,
+        tactileContinuous: draft.tactileContinuous,
+        occupied: draft.occupied,
+      }),
+    [draft],
+  );
+  const predictedResult = judgement.conclusion === '合格' ? '已整改' : '复发';
+
   const openRecheck = (row: RectifyPlan) => {
+    // 同一整改条目可能反复复检：默认带出该点位最近一次现场测值，复检员在此基础上改填
+    const latest = inspections.find((i) => i.pointId === row.pointId);
     setEditing(row);
-    setDraft({ status: '已整改', recheckDate: todayStr(), note: '' });
+    setDraft(emptyDraft(latest));
   };
 
   const handleRecheck = async () => {
     if (!editing) return;
+    if (!draft.date) {
+      message.warning('请填写复检日期');
+      return;
+    }
+    if (!(Number(draft.slope) > 0)) {
+      message.warning('请填写现场实测坡度');
+      return;
+    }
+    if (!(Number(draft.clearWidth) > 0)) {
+      message.warning('请填写现场实测净宽');
+      return;
+    }
+    if (!draft.inspector.trim()) {
+      message.warning('请填写复检人');
+      return;
+    }
     setSaving(true);
     try {
-      const requirement = draft.note.trim()
-        ? `${editing.requirement}｜复检说明：${draft.note.trim()}`
-        : editing.requirement;
-      await updateRectify(editing.id, {
-        status: draft.status,
-        recheckDate: draft.recheckDate || todayStr(),
-        requirement,
-      });
-      message.success('复检结果已登记');
+      const { record } = await registerRecheck(editing.id, draft);
+      message.success(
+        record.result === '已整改'
+          ? `复检达标（${record.date}），条目标记为已整改，总览合格率已刷新`
+          : `复检仍不达标（${record.date}），条目标记为复发，总览待整改数已刷新`,
+      );
       setEditing(null);
     } catch (e) {
       message.error(`复检登记失败：${e instanceof Error ? e.message : String(e)}`);
@@ -135,6 +190,20 @@ export default function Rectify() {
       render: (v: string) => v || <Typography.Text type="secondary">未复检</Typography.Text>,
     },
     {
+      title: '复检次数',
+      width: 90,
+      render: (_, row) => {
+        const n = row.rechecks?.length ?? 0;
+        return n ? (
+          <Tag color="processing" data-testid={`recheck-count-${row.id}`}>
+            {n} 次
+          </Tag>
+        ) : (
+          <Typography.Text type="secondary">0 次</Typography.Text>
+        );
+      },
+    },
+    {
       title: '状态',
       dataIndex: 'status',
       width: 100,
@@ -157,7 +226,7 @@ export default function Rectify() {
         <div>
           <h1 className="gb-page-title">整改清单</h1>
           <Typography.Text type="secondary">
-            按状态与期限分组，逾期条目置顶；登记复检结果后自动回流到点位详情。
+            按状态与期限分组，逾期条目置顶；每次复检填写现场测值并自动判定，结果回流点位核验历史与总览统计。
           </Typography.Text>
         </div>
         <Space wrap>
@@ -208,7 +277,7 @@ export default function Rectify() {
         </Col>
         <Col xs={12} md={6}>
           <Card size="small">
-            <Typography.Text type="secondary">待整改（含逾期）</Typography.Text>
+            <Typography.Text type="secondary">待整改（含逾期、复发）</Typography.Text>
             <div style={{ fontSize: 24, fontWeight: 600, color: '#d46b08' }} data-testid="rectify-pending">
               {pendingRectifies.length}
             </div>
@@ -253,6 +322,16 @@ export default function Rectify() {
               dataSource={g.items}
               columns={columns}
               rowClassName={(row) => (isOverdue(row.deadline, row.status) ? 'gb-overdue-row' : '')}
+              expandable={{
+                expandedRowRender: (row) => (
+                  <div style={{ padding: '4px 0' }}>
+                    <Typography.Text strong style={{ display: 'block', marginBottom: 8 }}>
+                      复检历史（共 {row.rechecks?.length ?? 0} 次）
+                    </Typography.Text>
+                    <RecheckHistory records={row.rechecks ?? []} compact />
+                  </div>
+                ),
+              }}
             />
           </Card>
         ))
@@ -274,8 +353,10 @@ export default function Rectify() {
         onCancel={() => setEditing(null)}
         onOk={handleRecheck}
         confirmLoading={saving}
-        okText="保存复检结果"
+        okText={`保存复检（判定：${predictedResult === '已整改' ? '达标·已整改' : '不达标·复发'}）`}
+        okButtonProps={{ danger: predictedResult === '复发' }}
         destroyOnClose
+        width={720}
       >
         {editing ? (
           <Space direction="vertical" size={12} style={{ width: '100%' }}>
@@ -283,38 +364,114 @@ export default function Rectify() {
               整改要求：{editing.requirement}
               <br />
               责任单位：{editing.unit} · 期限：{editing.deadline}
+              {editing.rechecks?.length ? ` · 已复检 ${editing.rechecks.length} 次，本次为第 ${editing.rechecks.length + 1} 次` : ''}
             </Typography.Text>
-            <div>
-              <Typography.Text>复检结论</Typography.Text>
-              <Select
-                style={{ width: '100%', marginTop: 4 }}
-                value={draft.status}
-                onChange={(v) => setDraft((c) => ({ ...c, status: v }))}
-                options={[
-                  { value: '已整改', label: '已整改（达标）' },
-                  { value: '复发', label: '复发（再次不达标）' },
-                  { value: '待整改', label: '待整改（继续跟踪）' },
-                ]}
-              />
-            </div>
-            <div>
-              <Typography.Text>复检日期</Typography.Text>
-              <DatePicker
-                style={{ width: '100%', marginTop: 4 }}
-                value={draft.recheckDate ? dayjs(draft.recheckDate) : null}
-                onChange={(d) => setDraft((c) => ({ ...c, recheckDate: d ? d.format('YYYY-MM-DD') : todayStr() }))}
-              />
-            </div>
-            <div>
-              <Typography.Text>复检说明</Typography.Text>
-              <Input.TextArea
-                rows={3}
-                style={{ marginTop: 4 }}
-                value={draft.note}
-                onChange={(e) => setDraft((c) => ({ ...c, note: e.target.value }))}
-                placeholder="如：已清退占用、坡道重做完成，实测坡度 4.2%"
-              />
-            </div>
+
+            <Alert
+              type={predictedResult === '已整改' ? 'success' : judgement.conclusion === '不合格' ? 'error' : 'warning'}
+              showIcon
+              data-testid="recheck-verdict"
+              message={
+                <Space wrap>
+                  <span>自动判定：</span>
+                  <StatusBadge value={judgement.conclusion} kind="conclusion" />
+                  <span>
+                    保存后条目标记为「<strong>{predictedResult}</strong>」，现场测值并入点位核验历史，总览按本次结果刷新
+                  </span>
+                </Space>
+              }
+              description={judgement.reasons.join('；')}
+            />
+
+            <Row gutter={12}>
+              <Col xs={24} md={12}>
+                <MeasureInput
+                  label="坡度"
+                  value={draft.slope}
+                  onChange={(v) => setDraft((c) => ({ ...c, slope: v }))}
+                  unit="%"
+                  pass={5}
+                  fail={8}
+                  direction="max"
+                  min={0}
+                  max={100}
+                  hint="纵坡不应大于 5%，超过 8% 判定不合格"
+                />
+              </Col>
+              <Col xs={24} md={12}>
+                <MeasureInput
+                  label="净宽"
+                  value={draft.clearWidth}
+                  onChange={(v) => setDraft((c) => ({ ...c, clearWidth: v }))}
+                  unit="cm"
+                  pass={120}
+                  fail={90}
+                  direction="min"
+                  min={0}
+                  max={500}
+                  step={1}
+                  hint="净宽不应小于 120cm，小于 90cm 判定不合格"
+                />
+              </Col>
+              <Col xs={12} md={8}>
+                <Typography.Text>扶手</Typography.Text>
+                <div style={{ marginTop: 4 }}>
+                  <Switch
+                    checked={draft.hasHandrail}
+                    onChange={(v) => setDraft((c) => ({ ...c, hasHandrail: v }))}
+                    checkedChildren="有"
+                    unCheckedChildren="无"
+                  />
+                </div>
+              </Col>
+              <Col xs={12} md={8}>
+                <Typography.Text>盲道连续</Typography.Text>
+                <div style={{ marginTop: 4 }}>
+                  <Switch
+                    checked={draft.tactileContinuous}
+                    onChange={(v) => setDraft((c) => ({ ...c, tactileContinuous: v }))}
+                    checkedChildren="连续"
+                    unCheckedChildren="断续"
+                  />
+                </div>
+              </Col>
+              <Col xs={24} md={8}>
+                <Typography.Text>占用情况</Typography.Text>
+                <Select
+                  style={{ width: '100%', marginTop: 4 }}
+                  value={draft.occupied}
+                  onChange={(v) => setDraft((c) => ({ ...c, occupied: v }))}
+                  options={OCCUPIED_LEVELS.map((o) => ({ value: o, label: o }))}
+                />
+              </Col>
+              <Col xs={24} md={12}>
+                <Typography.Text>复检日期</Typography.Text>
+                <DatePicker
+                  style={{ width: '100%', marginTop: 4 }}
+                  value={draft.date ? dayjs(draft.date) : null}
+                  onChange={(d) => setDraft((c) => ({ ...c, date: d ? d.format('YYYY-MM-DD') : todayStr() }))}
+                />
+              </Col>
+              <Col xs={24} md={12}>
+                <Typography.Text>复检人</Typography.Text>
+                <Input
+                  style={{ marginTop: 4 }}
+                  value={draft.inspector}
+                  onChange={(e) => setDraft((c) => ({ ...c, inspector: e.target.value }))}
+                  placeholder="如：督导员 王岚"
+                />
+              </Col>
+              <Col span={24}>
+                <Typography.Text>复检说明</Typography.Text>
+                <Input.TextArea
+                  rows={3}
+                  style={{ marginTop: 4 }}
+                  value={draft.note}
+                  onChange={(e) => setDraft((c) => ({ ...c, note: e.target.value }))}
+                  placeholder="如：已清退占用、坡道重做完成；现场复测情况与后续安排"
+                />
+              </Col>
+            </Row>
           </Space>
         ) : null}
       </Modal>

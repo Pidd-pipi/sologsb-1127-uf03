@@ -55,6 +55,15 @@ export function rejudge(inspection: Inspection): JudgeResult {
   });
 }
 
+/**
+ * 核验记录「最新在前」排序：先按核验日期倒序；
+ * 同一天再按录入时间倒序，确保当天登记的复检成为点位最新结论。
+ */
+export function compareInspectionDesc(a: Inspection, b: Inspection): number {
+  if (a.date !== b.date) return a.date < b.date ? 1 : -1;
+  return a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0;
+}
+
 /** 单段可轮椅通行判定 */
 export function judgeSegment(seg: Pick<RouteSegment, 'curbHeight' | 'stepCount' | 'obstacleCount'>): {
   passable: boolean;

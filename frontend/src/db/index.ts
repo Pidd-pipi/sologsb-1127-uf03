@@ -2,7 +2,7 @@ import Dexie, { type Table } from 'dexie';
 import type { AccessPoint } from '../types/point';
 import type { Inspection } from '../types/inspection';
 import type { RouteSegment } from '../types/route';
-import type { RectifyPlan } from '../types/rectify';
+import type { RectifyPlan, RecheckRecord } from '../types/rectify';
 import { addDays, makeId, todayStr, toPlain } from '../utils/format';
 import { judgeInspection } from '../utils/routeCheck';
 
@@ -13,6 +13,7 @@ export const DB_NAME = 'gbaccessmap-db';
  * v1 建 points / inspections
  * v2 加 routes 表与 pointId 索引
  * v3 加 rectifies 表，并为历史不合格核验补建整改条目
+ * v4 rectifies 内嵌复检历史 rechecks（老条目补空数组；历史数据无测量值，不回造核验记录）
  */
 class AccessMapDb extends Dexie {
   points!: Table<AccessPoint, string>;
@@ -68,8 +69,26 @@ class AccessMapDb extends Dexie {
             deadline: addDays(insp.date || todayStr(), 30),
             recheckDate: '',
             status: '待整改',
+            rechecks: [],
             createdAt: new Date().toISOString(),
           });
+        }
+      });
+    this.version(4)
+      .stores({
+        points: 'id, code, facilityType, district, name',
+        inspections: 'id, pointId, date, conclusion',
+        routes: 'id, routeName, fromPointId, toPointId, order',
+        rectifies: 'id, pointId, status, deadline',
+      })
+      .upgrade(async (tx) => {
+        // v4：复检历史改为结构化记录；老条目没有现场测值，统一补空数组
+        const table = tx.table<RectifyPlan, string>('rectifies');
+        const rows = await table.toArray();
+        for (const row of rows) {
+          if (!Array.isArray(row.rechecks)) {
+            await table.update(row.id, { rechecks: [] });
+          }
         }
       });
   }
@@ -344,6 +363,46 @@ function buildSeed() {
       });
     }
   });
+  // 已整改条目的复检：现场测值达标，复检记录并入核验历史
+  const elevatorRecheckDate = addDays(today, -12);
+  const elevatorRecheck = judgeInspection({
+    slope: 1.6,
+    clearWidth: 148,
+    hasHandrail: true,
+    tactileContinuous: true,
+    occupied: '无',
+  });
+  inspections.push({
+    id: 'ins-seed-recheck-1008',
+    pointId: 'pt-1008',
+    date: elevatorRecheckDate,
+    inspector: '督导员 陈默',
+    slope: 1.6,
+    clearWidth: 148,
+    hasHandrail: true,
+    tactileContinuous: true,
+    occupied: '无',
+    conclusion: elevatorRecheck.conclusion,
+    problem: '',
+    createdAt: now,
+  });
+  const elevatorRecheckRecord: RecheckRecord = {
+    id: 'rck-seed-1008-1',
+    rectifyId: 'rct-seed-4',
+    inspectionId: 'ins-seed-recheck-1008',
+    date: elevatorRecheckDate,
+    inspector: '督导员 陈默',
+    slope: 1.6,
+    clearWidth: 148,
+    hasHandrail: true,
+    tactileContinuous: true,
+    occupied: '无',
+    conclusion: elevatorRecheck.conclusion,
+    reasons: elevatorRecheck.reasons,
+    result: '已整改',
+    note: '轿厢呼叫按钮盲文标识已更换，现场复测达标',
+    createdAt: now,
+  };
   const rectifies: RectifyPlan[] = [
     {
       id: 'rct-seed-1',
@@ -353,6 +412,7 @@ function buildSeed() {
       deadline: addDays(today, -21),
       recheckDate: '',
       status: '待整改',
+      rechecks: [],
       createdAt: now,
     },
     {
@@ -363,6 +423,7 @@ function buildSeed() {
       deadline: addDays(today, -6),
       recheckDate: '',
       status: '待整改',
+      rechecks: [],
       createdAt: now,
     },
     {
@@ -373,6 +434,7 @@ function buildSeed() {
       deadline: addDays(today, 18),
       recheckDate: '',
       status: '待整改',
+      rechecks: [],
       createdAt: now,
     },
     {
@@ -381,8 +443,9 @@ function buildSeed() {
       requirement: '更换电梯轿厢呼叫按钮盲文标识',
       unit: '轨道交通运营部',
       deadline: addDays(today, -40),
-      recheckDate: addDays(today, -12),
+      recheckDate: elevatorRecheckDate,
       status: '已整改',
+      rechecks: [elevatorRecheckRecord],
       createdAt: now,
     },
   ];

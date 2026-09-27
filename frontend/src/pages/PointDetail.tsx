@@ -25,10 +25,11 @@ import MeasureInput from '../components/common/MeasureInput';
 import StatusBadge from '../components/common/StatusBadge';
 import FacilityIcon from '../components/common/FacilityIcon';
 import EmptyState from '../components/common/EmptyState';
+import RecheckHistory from '../components/common/RecheckHistory';
 import { usePointStore } from '../stores/pointStore';
 import { OCCUPIED_LEVELS, type Inspection, type OccupiedLevel } from '../types/inspection';
 import type { RectifyPlan } from '../types/rectify';
-import { judgeInspection } from '../utils/routeCheck';
+import { compareInspectionDesc, judgeInspection } from '../utils/routeCheck';
 import { addDays, isOverdue, todayStr } from '../utils/format';
 
 interface InlineInspection {
@@ -57,7 +58,7 @@ export default function PointDetail() {
     () =>
       inspections
         .filter((i) => i.pointId === id)
-        .sort((a, b) => (a.date < b.date ? 1 : -1)),
+        .sort(compareInspectionDesc),
     [inspections, id],
   );
   const plans = useMemo(
@@ -65,6 +66,15 @@ export default function PointDetail() {
       rectifies.filter((r) => r.pointId === id).sort((a, b) => (a.deadline < b.deadline ? -1 : 1)),
     [rectifies, id],
   );
+
+  // 复检登记产生的核验记录 id 集合：在核验历史里标注来源，便于区分首次核验与历次复检
+  const recheckInspectionIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const plan of plans) {
+      for (const rec of plan.rechecks ?? []) ids.add(rec.inspectionId);
+    }
+    return ids;
+  }, [plans]);
 
   const [form, setForm] = useState<InlineInspection>(() => ({
     date: todayStr(),
@@ -156,7 +166,18 @@ export default function PointDetail() {
   };
 
   const inspectionColumns: ColumnsType<Inspection> = [
-    { title: '核验日期', dataIndex: 'date', width: 120, sorter: (a, b) => (a.date < b.date ? -1 : 1) },
+    {
+      title: '核验日期',
+      dataIndex: 'date',
+      width: 130,
+      sorter: (a, b) => (a.date < b.date ? -1 : 1),
+      render: (v: string, row) => (
+        <Space size={4}>
+          {v}
+          {recheckInspectionIds.has(row.id) && <Tag color="processing">复检</Tag>}
+        </Space>
+      ),
+    },
     { title: '核验人', dataIndex: 'inspector', width: 130 },
     { title: '坡度', dataIndex: 'slope', width: 80, render: (v: number) => `${v}%` },
     { title: '净宽', dataIndex: 'clearWidth', width: 90, render: (v: number) => `${v} cm` },
@@ -175,7 +196,7 @@ export default function PointDetail() {
       render: (v: string) => <StatusBadge value={v} kind="conclusion" />,
     },
     {
-      title: '问题描述',
+      title: '问题描述 / 复检说明',
       dataIndex: 'problem',
       ellipsis: true,
       render: (v: string) => v || <Typography.Text type="secondary">无</Typography.Text>,
@@ -200,10 +221,18 @@ export default function PointDetail() {
         ),
     },
     {
-      title: '复检日期',
+      title: '最近复检',
       dataIndex: 'recheckDate',
       width: 120,
-      render: (v: string) => v || <Typography.Text type="secondary">未复检</Typography.Text>,
+      render: (v: string, row) =>
+        v ? (
+          <Space size={4}>
+            {v}
+            <Tag color="processing">{row.rechecks?.length ?? 0} 次</Tag>
+          </Space>
+        ) : (
+          <Typography.Text type="secondary">未复检</Typography.Text>
+        ),
     },
     {
       title: '状态',
@@ -408,7 +437,23 @@ export default function PointDetail() {
       <Card title="整改跟踪" size="small" style={{ marginTop: 16 }}>
         <Divider style={{ margin: '0 0 12px' }} />
         {plans.length ? (
-          <Table<RectifyPlan> rowKey="id" size="small" pagination={false} dataSource={plans} columns={rectifyColumns} />
+          <Table<RectifyPlan>
+            rowKey="id"
+            size="small"
+            pagination={false}
+            dataSource={plans}
+            columns={rectifyColumns}
+            expandable={{
+              expandedRowRender: (plan) => (
+                <div style={{ padding: '4px 0' }}>
+                  <Typography.Text strong style={{ display: 'block', marginBottom: 8 }}>
+                    复检历史（共 {plan.rechecks?.length ?? 0} 次）
+                  </Typography.Text>
+                  <RecheckHistory records={plan.rechecks ?? []} />
+                </div>
+              ),
+            }}
+          />
         ) : (
           <EmptyState
             title="暂无整改条目"

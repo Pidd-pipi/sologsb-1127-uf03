@@ -5,6 +5,7 @@ import type { AccessPoint } from '../types/point';
 import type { Inspection } from '../types/inspection';
 import type { RectifyPlan } from '../types/rectify';
 import { isOverdue } from '../utils/format';
+import { compareInspectionDesc } from '../utils/routeCheck';
 
 export interface InspectionFilterResult {
   filter: InspectionFilter;
@@ -59,10 +60,11 @@ export function useInspectionFilter(): InspectionFilterResult {
   );
 
   const latestByPoint = useMemo(() => {
+    // 统一按日期 + 录入时间排序，取每个点位最新一次核验（复检登记后即为复检结论）
+    const ordered = [...inspections].sort(compareInspectionDesc);
     const map = new Map<string, Inspection>();
-    for (const i of inspections) {
-      const cur = map.get(i.pointId);
-      if (!cur || cur.date < i.date) map.set(i.pointId, i);
+    for (const i of ordered) {
+      if (!map.has(i.pointId)) map.set(i.pointId, i);
     }
     return map;
   }, [inspections]);
